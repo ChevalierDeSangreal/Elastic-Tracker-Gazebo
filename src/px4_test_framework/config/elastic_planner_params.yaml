@@ -1,0 +1,30 @@
+# Elastic Tracker 规划器参数配置
+# 参考 Elastic-Tracker 原始配置
+
+# 规划频率
+plan_hz: 20
+
+# 轨迹参数
+K: 8                    # MINCO轨迹段数
+vmax: 1.5               # 最大速度 [m/s]
+amax: 2.5               # 最大加速度 [m/s^2]
+
+# 优化权重
+rhoT: 100.0             # 时间权重
+rhoP: 10000.0           # 位置权重（视野约束）
+rhoV: 1000.0            # 速度权重
+rhoA: 1000.0            # 加速度权重
+
+# 安全参数
+clearance_d: 0.2        # 安全间隙 [m]
+tolerance_d: 0.5        # 容忍距离 [m]
+tracking_dist: 3.0      # 跟踪距离 [m]
+
+# 调试模式
+debug: false
+fake: false             # 是否使用假目标（无需真实目标）
+
+# 视野参数
+rhosVisibility_: 10000.0  # 视野权重
+rhoTracking_: 1000.0      # 跟踪权重
+

@@ -40,7 +40,7 @@ add_executable(odom_visualization src/odom_visualization.cpp)
 target_link_libraries(odom_visualization
    ${catkin_LIBRARIES}
    ${ARMADILLO_LIBRARIES}
-   pose_utils
+   ${pose_utils_LIBRARIES}
 )
 
 add_dependencies(odom_visualization
@@ -52,7 +52,7 @@ add_executable(odom_visualization_car src/odom_visualization_car.cpp)
 target_link_libraries(odom_visualization_car
    ${catkin_LIBRARIES}
    ${ARMADILLO_LIBRARIES}
-   pose_utils
+   ${pose_utils_LIBRARIES}
 )
 
 add_dependencies(odom_visualization_car

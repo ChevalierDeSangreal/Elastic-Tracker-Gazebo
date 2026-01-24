@@ -8,6 +8,7 @@
 #include <ros/package.h>
 #include <ros/ros.h>
 #include <std_msgs/Empty.h>
+#include <std_msgs/Int32.h>
 #include <traj_opt/traj_opt.h>
 
 #include <Eigen/Core>
@@ -25,7 +26,7 @@ Eigen::IOFormat CommaInitFmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ",
 class Nodelet : public nodelet::Nodelet {
  private:
   std::thread initThread_;
-  ros::Subscriber gridmap_sub_, odom_sub_, target_sub_, triger_sub_, land_triger_sub_;
+  ros::Subscriber gridmap_sub_, odom_sub_, target_sub_, triger_sub_, land_triger_sub_, state_sub_;
   ros::Timer plan_timer_;
 
   ros::Publisher traj_pub_, heartbeat_pub_, replanState_pub_;
@@ -55,6 +56,9 @@ class Nodelet : public nodelet::Nodelet {
   int traj_id_ = 0;
   bool wait_hover_ = true;
   bool force_hover_ = true;
+  int current_fsm_state_ = -1;  // 当前状态机状态 (-1=未初始化, 5=TRAJ)
+  int drone_id_ = 0;  // 无人机ID，用于订阅状态话题
+  bool in_traj_state_ = false;  // 是否在TRAJ状态中
 
   nav_msgs::Odometry odom_msg_, target_msg_;
   quadrotor_msgs::OccMap3d map_msg_;
@@ -67,13 +71,14 @@ class Nodelet : public nodelet::Nodelet {
   std::atomic_bool target_received_ = ATOMIC_VAR_INIT(false);
   std::atomic_bool land_triger_received_ = ATOMIC_VAR_INIT(false);
 
-  void pub_hover_p(const Eigen::Vector3d& hover_p, const ros::Time& stamp) {
+  void pub_hover_p(const Eigen::Vector3d& hover_p, const double& hover_yaw, const ros::Time& stamp) {
     quadrotor_msgs::PolyTraj traj_msg;
     traj_msg.hover = true;
     traj_msg.hover_p.resize(3);
     for (int i = 0; i < 3; ++i) {
       traj_msg.hover_p[i] = hover_p[i];
     }
+    traj_msg.yaw = hover_yaw;
     traj_msg.start_time = stamp;
     traj_msg.traj_id = traj_id_++;
     traj_pub_.publish(traj_msg);
@@ -145,9 +150,37 @@ class Nodelet : public nodelet::Nodelet {
     gridmap_lock_.clear();
   }
 
+  void state_callback(const std_msgs::Int32::ConstPtr& msg) {
+    int new_state = msg->data;
+    if (new_state != current_fsm_state_) {
+      ROS_INFO("[planner] FSM state changed: %d -> %d", current_fsm_state_, new_state);
+      current_fsm_state_ = new_state;
+      
+      // 进入TRAJ状态(5)
+      if (new_state == 5) {
+        in_traj_state_ = true;
+        force_hover_ = false;  // 允许规划
+        ROS_WARN("[planner] Entered TRAJ state - Planning enabled");
+      }
+      // 离开TRAJ状态
+      else if (in_traj_state_) {
+        in_traj_state_ = false;
+        ROS_WARN("[planner] Left TRAJ state (now in state %d) - Planning disabled, FSM takes over", new_state);
+      }
+    }
+  }
+
   // NOTE main callback
   void plan_timer_callback(const ros::TimerEvent& event) {
     heartbeat_pub_.publish(std_msgs::Empty());
+    
+    // 只在TRAJ状态(5)下运行规划
+    // 参考RealFlight_ros: 控制节点只在TRAJ状态工作，其他状态由FSM完全接管
+    if (current_fsm_state_ != 5) {
+      // 不在TRAJ状态，直接返回，让状态机接管控制
+      return;
+    }
+    
     if (!odom_received_ || !map_received_) {
       return;
     }
@@ -196,9 +229,12 @@ class Nodelet : public nodelet::Nodelet {
 
     // NOTE just for landing on the car!
     if (land_triger_received_) {
+      Eigen::Vector3d dp_land = target_p - odom_p;
+      double desired_yaw_land = std::atan2(dp_land.y(), dp_land.x());
       if (std::fabs((target_p - odom_p).norm() < 0.1 && odom_v.norm() < 0.1 && target_v.norm() < 0.2)) {
         if (!wait_hover_) {
-          pub_hover_p(odom_p, ros::Time::now());
+          // 着陆时hover，使用指向目标的yaw
+          pub_hover_p(odom_p, desired_yaw_land, ros::Time::now());
           wait_hover_ = true;
         }
         ROS_WARN("[planner] HOVERING...");
@@ -208,21 +244,26 @@ class Nodelet : public nodelet::Nodelet {
       target_p = target_p + target_q * land_p_;
       wait_hover_ = false;
     } else {
-      target_p.z() += 1.0;
+      // target_p.z() += 1.0;
       // NOTE determin whether to replan
       Eigen::Vector3d dp = target_p - odom_p;
       // std::cout << "dist : " << dp.norm() << std::endl;
       double desired_yaw = std::atan2(dp.y(), dp.x());
       Eigen::Vector3d project_yaw = odom_q.toRotationMatrix().col(0);  // NOTE ZYX
       double now_yaw = std::atan2(project_yaw.y(), project_yaw.x());
-      if (std::fabs((target_p - odom_p).norm() - tracking_dist_) < tolerance_d_ &&
-          odom_v.norm() < 0.1 && target_v.norm() < 0.2 &&
-          std::fabs(desired_yaw - now_yaw) < 0.5) {
+      double dist_to_target = (target_p - odom_p).norm();
+      // 使用更严格的悬停判断条件，避免快速切换
+      // 只有当距离非常接近目标距离，且速度都很小时才悬停
+      if (std::fabs(dist_to_target - tracking_dist_) < tolerance_d_ &&
+          odom_v.norm() < 0.05 && target_v.norm() < 0.1 &&
+          std::fabs(desired_yaw - now_yaw) < 0.3) {
         if (!wait_hover_) {
-          pub_hover_p(odom_p, ros::Time::now());
+          // hover时使用desired_yaw，让无人机指向目标
+          pub_hover_p(odom_p, desired_yaw, ros::Time::now());
           wait_hover_ = true;
         }
-        ROS_WARN("[planner] HOVERING...");
+        ROS_WARN_THROTTLE(1.0, "[planner] HOVERING... (dist=%.2f, target_dist=%.2f, yaw=%.2f)", 
+                          dist_to_target, tracking_dist_, desired_yaw);
         replanStateMsg_.state = -1;
         replanState_pub_.publish(replanStateMsg_);
         return;
@@ -417,7 +458,10 @@ class Nodelet : public nodelet::Nodelet {
       ROS_FATAL("[planner] EMERGENCY STOP!!!");
       replanStateMsg_.state = 2;
       replanState_pub_.publish(replanStateMsg_);
-      pub_hover_p(iniState.col(0), replan_stamp);
+      // 紧急停止时使用当前yaw
+      Eigen::Vector3d project_yaw_emergency = odom_q.toRotationMatrix().col(0);
+      double now_yaw_emergency = std::atan2(project_yaw_emergency.y(), project_yaw_emergency.x());
+      pub_hover_p(iniState.col(0), now_yaw_emergency, replan_stamp);
       return;
     } else {
       ROS_ERROR("[planner] REPLAN FAILED, EXECUTE LAST TRAJ...");
@@ -430,6 +474,14 @@ class Nodelet : public nodelet::Nodelet {
 
   void fake_timer_callback(const ros::TimerEvent& event) {
     heartbeat_pub_.publish(std_msgs::Empty());
+    
+    // 只在TRAJ状态(5)下运行规划
+    // 参考RealFlight_ros: 控制节点只在TRAJ状态工作，其他状态由FSM完全接管
+    if (current_fsm_state_ != 5) {
+      // 不在TRAJ状态，直接返回，让状态机接管控制
+      return;
+    }
+    
     if (!odom_received_ || !map_received_) {
       return;
     }
@@ -444,6 +496,10 @@ class Nodelet : public nodelet::Nodelet {
     Eigen::Vector3d odom_v(odom_msg.twist.twist.linear.x,
                            odom_msg.twist.twist.linear.y,
                            odom_msg.twist.twist.linear.z);
+    Eigen::Quaterniond odom_q(odom_msg.pose.pose.orientation.w,
+                              odom_msg.pose.pose.orientation.x,
+                              odom_msg.pose.pose.orientation.y,
+                              odom_msg.pose.pose.orientation.z);
     if (!triger_received_) {
       return;
     }
@@ -490,9 +546,12 @@ class Nodelet : public nodelet::Nodelet {
       }
     }
     // NOTE determin whether to pub hover
+    Eigen::Vector3d dp_goal = goal_ - odom_p;
+    double desired_yaw_goal = std::atan2(dp_goal.y(), dp_goal.x());
     if ((goal_ - odom_p).norm() < tracking_dist_ + tolerance_d_ && odom_v.norm() < 0.1) {
       if (!wait_hover_) {
-        pub_hover_p(odom_p, ros::Time::now());
+        // hover时使用指向goal的yaw
+        pub_hover_p(odom_p, desired_yaw_goal, ros::Time::now());
         wait_hover_ = true;
       }
       ROS_WARN("[planner] HOVERING...");
@@ -600,7 +659,10 @@ class Nodelet : public nodelet::Nodelet {
       ROS_FATAL("[planner] EMERGENCY STOP!!!");
       replanStateMsg_.state = 2;
       replanState_pub_.publish(replanStateMsg_);
-      pub_hover_p(iniState.col(0), replan_stamp);
+      // 紧急停止时使用当前yaw
+      Eigen::Vector3d project_yaw_emergency2 = odom_q.toRotationMatrix().col(0);
+      double now_yaw_emergency2 = std::atan2(project_yaw_emergency2.y(), project_yaw_emergency2.x());
+      pub_hover_p(iniState.col(0), now_yaw_emergency2, replan_stamp);
       return;
     } else {
       ROS_ERROR("[planner] REPLAN FAILED, EXECUTE LAST TRAJ...");
@@ -750,6 +812,7 @@ class Nodelet : public nodelet::Nodelet {
     nh.getParam("tolerance_d", tolerance_d_);
     nh.getParam("debug", debug_);
     nh.getParam("fake", fake_);
+    nh.param("drone_id", drone_id_, 0);  // 读取无人机ID，默认为0
 
     gridmapPtr_ = std::make_shared<mapping::OccGridMap>();
     envPtr_ = std::make_shared<env::Env>(nh, gridmapPtr_);
@@ -779,7 +842,13 @@ class Nodelet : public nodelet::Nodelet {
     target_sub_ = nh.subscribe<nav_msgs::Odometry>("target", 10, &Nodelet::target_callback, this, ros::TransportHints().tcpNoDelay());
     triger_sub_ = nh.subscribe<geometry_msgs::PoseStamped>("triger", 10, &Nodelet::triger_callback, this, ros::TransportHints().tcpNoDelay());
     land_triger_sub_ = nh.subscribe<geometry_msgs::PoseStamped>("land_triger", 10, &Nodelet::land_triger_callback, this, ros::TransportHints().tcpNoDelay());
-    ROS_WARN("Planning node initialized!");
+    
+    // 订阅状态机状态（使用全局话题名称，不受命名空间影响）
+    std::string state_topic = "/state/state_drone_" + std::to_string(drone_id_);
+    // 注意：使用全局NodeHandle订阅全局话题，避免命名空间影响
+    ros::NodeHandle nh_global;
+    state_sub_ = nh_global.subscribe<std_msgs::Int32>(state_topic, 10, &Nodelet::state_callback, this);
+    ROS_WARN("Planning node initialized! Subscribed to FSM state: %s", state_topic.c_str());
   }
 
  public:

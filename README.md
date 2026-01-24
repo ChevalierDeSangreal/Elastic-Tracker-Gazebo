@@ -70,7 +70,49 @@ roslaunch planning simulation_landing.launch
     <img src="figs/sim_landing.gif" width="500"/>
 </p>
 
-## 3. Acknowledgement
+## 3. Tracking Visualization (追踪可视化)
+
+为了方便分析和对比跟踪效果，我们提供了追踪结果可视化工具，**已集成到主 launch 文件中**。
+
+### 使用方法
+
+**一键启动（推荐）**：
+```bash
+# 启动 Elastic Tracker，自动包含可视化和RViz
+cd Elastic-Tracker
+source devel/setup.bash
+roslaunch px4_test_framework elastic_tracking.launch use_rviz:=true
+```
+
+可视化节点会自动启动，RViz 会显示完整的追踪可视化界面。
+
+**独立启动**（如果不想自动启动）：
+```bash
+# 单独启动可视化节点
+roslaunch tracking_visualizer tracking_visualizer.launch
+
+# 单独启动 RViz
+rviz -d $(rospack find tracking_visualizer)/config/tracking_visualization.rviz
+```
+
+### 功能特性
+
+- **实时轨迹显示**：无人机轨迹（蓝色）和目标轨迹（红色）
+- **误差可视化**：黄色连线显示当前跟踪误差，文本显示误差数值
+- **数据记录**：自动保存追踪数据到 `/tmp/elastic_tracker_tracking_data.csv`
+- **统计分析**：实时计算平均误差、最大误差、RMS 误差
+
+### 可视化话题
+
+| 话题名称 | 消息类型 | 说明 |
+|---------|---------|------|
+| `/tracking_viz/drone_path` | `nav_msgs/Path` | 无人机历史轨迹 |
+| `/tracking_viz/target_path` | `nav_msgs/Path` | 目标历史轨迹 |
+| `/tracking_viz/error_markers` | `visualization_msgs/MarkerArray` | 误差可视化标记 |
+| `/tracking_viz/distance_error` | `std_msgs/Float64` | 当前距离误差 [m] |
+| `/tracking_viz/velocity_error` | `std_msgs/Float64` | 当前速度误差 [m/s] |
+
+## 4. Acknowledgement
 We use [**MINCO**](https://github.com/ZJU-FAST-Lab/GCOPTER) as our trajectory representation.
 
 We use [**DecompROS**](https://github.com/sikang/DecompROS) for safe flight corridor generation and visualization.

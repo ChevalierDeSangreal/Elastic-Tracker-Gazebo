@@ -1,0 +1,124 @@
+<!-- 
+  Elastic Tracker + PX4 跟踪测试（集成状态机框架）
+  
+  完全兼容 RealFlight_ros 的状态机框架，通过状态机进行位置初始化
+  
+  使用方法：
+  1. 先启动 px4_simulation.launch（PX4 + MAVROS + 目标）
+  2. 启动状态机（自动起飞、悬停）
+  3. 再启动此文件（Elastic Planner + 轨迹服务器 + 状态监听器）
+  4. 状态机进入 TRAJ 状态时，自动触发 Elastic Tracker 开始跟踪
+  
+  注意：本版本使用与 Elastic-Tracker-Drone 一致的控制层级：
+  - 直接使用 PositionTarget 消息通过 MAVROS 发送到 PX4
+  - 不再使用 SO3 控制器和转换器
+-->
+
+<launch>
+  <arg name="drone_id" default="0"/>
+  <arg name="drone_ns" default="drone0"/>
+  <arg name="use_rviz" default="false" doc="Whether to launch RViz (usually already started by px4_simulation.launch)"/>
+  
+  <!-- 状态机配置：使用 Position Control 模式（Elastic Tracker 需要位置控制） -->
+  <arg name="config_file" default="$(find offboard_state_machine)/config/fsm_traj.yaml"/>
+  
+  <!-- 启动状态机（自动起飞、悬停） -->
+  <include file="$(find offboard_state_machine)/launch/single_drone_test.launch">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="mode" value="sitl"/>
+    <arg name="config_file" value="$(arg config_file)"/>
+    <arg name="traj_use_position_control" value="true"/>
+  </include>
+  
+  <group ns="$(arg drone_ns)">
+    <!-- 0. 空地图发布器 - 发布空地图（无障碍物）供planning节点使用 -->
+    <node pkg="px4_test_framework" type="empty_map_publisher_node" name="empty_map_publisher" output="screen">
+      <param name="map_topic" value="gridmap_inflate"/>
+      <param name="publish_rate" value="10.0"/>
+    </node>
+    
+    <!-- 1. Elastic Tracker规划器 - 使用原有实现 -->
+    <!-- 注意：planning.launch 内部使用 nodelet，需要manager -->
+    <node pkg="nodelet" type="nodelet" name="planning_manager" args="manager" output="screen">
+      <param name="num_worker_threads" value="16"/>
+    </node>
+    
+    <node pkg="nodelet" type="nodelet" name="planning" args="load planning/Nodelet planning_manager" output="screen">
+      <remap from="~odom" to="mavros/local_position/odom"/>
+      <remap from="~gridmap_inflate" to="gridmap_inflate"/>
+      <remap from="~heartbeat" to="heartbeat"/>
+      <remap from="~trajectory" to="trajectory"/>
+      <remap from="~replanState" to="replanState"/>
+      <remap from="~target" to="/target/odom"/>  <!-- 全局命名空间，多无人机共享 -->
+      <remap from="~triger" to="/move_base_simple/goal"/>  <!-- 全局触发器 -->
+      
+      <param name="drone_id" value="$(arg drone_id)"/>  <!-- 传递drone_id参数，用于订阅状态机状态 -->
+      <param name="plan_hz" value="20"/>
+      <param name="K" value="8"/>
+      <param name="vmax" value="3.0"/>
+      <param name="amax" value="6.0"/>
+      <param name="rhoT" value="100.0"/>
+      <param name="rhoP" value="10000.0"/>
+      <param name="rhoV" value="1000.0"/>
+      <param name="rhoA" value="1000.0"/>
+      <param name="rhoTracking" value="1000.0"/>
+      <param name="rhosVisibility" value="10000.0"/>
+      <param name="theta_clearance" value="0.8"/>
+      <param name="clearance_d" value="0.2"/>
+      <param name="tolerance_d" value="0.1"/>
+      <param name="tracking_dist" value="1.0"/>
+      <param name="tracking_dur" value="3.0"/>
+      <param name="tracking_dt" value="0.2"/>
+      <param name="debug" value="false"/>
+      <param name="prediction/rho_a" value="1.0"/>
+      <param name="prediction/vmax" value="4.0"/>
+    </node>
+    
+    <!-- 2. 轨迹服务器 - 直接发布PositionTarget到MAVROS（与Elastic-Tracker-Drone一致） -->
+    <node pkg="planning" name="traj_server" type="traj_server" output="screen">
+      <remap from="~position_cmd" to="mavros/setpoint_raw/local"/>
+      <remap from="~trajectory" to="trajectory"/>
+      <remap from="~heartbeat" to="heartbeat"/>
+      <param name="drone_id" value="$(arg drone_id)"/>  <!-- 传递drone_id参数，用于订阅状态机状态 -->
+      <param name="time_forward" value="1.0" type="double"/>
+    </node>
+    
+    <!-- 6. 状态监听器 - 监听状态机状态，自动触发 Elastic Tracker -->
+    <node pkg="px4_test_framework" type="state_listener_node" name="state_listener" output="screen">
+      <param name="drone_id" value="$(arg drone_id)"/>
+      <param name="trigger_topic" value="/move_base_simple/goal"/>
+      <param name="traj_duration" value="20.0"/>  <!-- TRAJ状态持续时间（秒），到时间后自动发送END_TRAJ命令 -->
+    </node>
+    
+    <!-- 7. Odom可视化 -->
+    <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization" output="screen">
+      <remap from="~odom" to="mavros/local_position/odom"/>
+      <param name="robot_scale" value="1.0"/>
+    </node>
+  </group>
+  
+  <!-- 目标可视化 -->
+  <node pkg="odom_visualization" name="target_odom_visualization" type="odom_visualization" output="screen">
+    <remap from="~odom" to="/target/odom"/>
+    <param name="robot_scale" value="0.7"/>
+    <param name="color/r" value="1.0"/>
+    <param name="color/g" value="0.0"/>
+    <param name="color/b" value="0.0"/>
+  </node>
+  
+  <!-- 追踪可视化（轨迹、误差、数据记录） -->
+  <node pkg="tracking_visualizer" type="tracking_visualizer_node" name="tracking_visualizer" output="screen">
+    <rosparam file="$(find tracking_visualizer)/config/visualizer_params.yaml" command="load"/>
+    <param name="drone_id" value="$(arg drone_id)"/>
+  </node>
+  
+  <!-- RViz可视化 -->
+  <group if="$(arg use_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz" 
+          args="-d $(find tracking_visualizer)/config/tracking_visualization.rviz" 
+          required="false" 
+          output="screen"/>
+  </group>
+  
+</launch>
+

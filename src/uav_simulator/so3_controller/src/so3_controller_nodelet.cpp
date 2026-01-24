@@ -17,10 +17,17 @@ class Nodelet : public nodelet::Nodelet{
   quadrotor_msgs::SO3Command so3cmd_;
 
   bool position_cmd_received_flag_ = false;
+  bool position_cmd_ever_received_ = false;  // 标记是否曾经收到过position_cmd
   Eigen::Vector3d des_pos_;
   double des_yaw_;
 
   void timer_callback(const ros::TimerEvent& event) {
+    // 只在曾经收到过position_cmd时才发布SO3命令
+    // 这样可以避免在TRAJ状态之前就开始工作
+    if (!position_cmd_ever_received_) {
+      return;
+    }
+    
     if (position_cmd_received_flag_) {
       position_cmd_received_flag_ = false;
     } else {
@@ -45,6 +52,7 @@ class Nodelet : public nodelet::Nodelet{
 
   void position_cmd_callback(const quadrotor_msgs::PositionCommand::ConstPtr& msg) {
     position_cmd_received_flag_ = true;
+    position_cmd_ever_received_ = true;  // 标记已经收到过position_cmd
     Eigen::Vector3d des_pos(msg->position.x, msg->position.y, msg->position.z);
     Eigen::Vector3d des_vel(msg->velocity.x, msg->velocity.y, msg->velocity.z);
     Eigen::Vector3d des_acc(msg->acceleration.x, msg->acceleration.y, msg->acceleration.z);
@@ -82,8 +90,12 @@ class Nodelet : public nodelet::Nodelet{
     so3ControlPtr_->setPos(pos);
     so3ControlPtr_->setVel(vel);
     so3cmd_.aux.current_yaw = tf::getYaw(msg->pose.pose.orientation);
-    des_pos_ = pos;
-    des_yaw_ = tf::getYaw(msg->pose.pose.orientation);
+    // 只在已经收到过position_cmd时才更新des_pos_和des_yaw_
+    // 这样可以避免在TRAJ状态之前就开始工作
+    if (position_cmd_ever_received_) {
+      des_pos_ = pos;
+      des_yaw_ = tf::getYaw(msg->pose.pose.orientation);
+    }
   }
   void imu_callback(const sensor_msgs::Imu::ConstPtr& msg) {
     Eigen::Vector3d acc(msg->linear_acceleration.x,
