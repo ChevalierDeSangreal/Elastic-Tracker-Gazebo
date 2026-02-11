@@ -37,3 +37,9 @@ error_color:
   b: 0.0
   a: 0.7
 
+setpoint_color:
+  r: 0.0  # 绿色
+  g: 1.0
+  b: 0.0
+  a: 1.0
+

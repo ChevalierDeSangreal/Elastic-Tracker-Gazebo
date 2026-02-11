@@ -6,3 +6,5 @@ debug
 bags
 *.bag
 *.bag.active
+logs/*
+.catkin_tools/*

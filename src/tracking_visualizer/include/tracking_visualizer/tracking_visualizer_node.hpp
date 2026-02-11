@@ -9,6 +9,7 @@
 #include <visualization_msgs/MarkerArray.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/Int32.h>
+#include <mavros_msgs/PositionTarget.h>
 #include <deque>
 #include <vector>
 #include <fstream>
@@ -35,6 +36,7 @@ private:
   // 回调函数
   void drone_odom_callback(const nav_msgs::Odometry::ConstPtr& msg);
   void target_odom_callback(const nav_msgs::Odometry::ConstPtr& msg);
+  void setpoint_callback(const mavros_msgs::PositionTarget::ConstPtr& msg);
   void state_callback(const std_msgs::Int32::ConstPtr& msg);
   void visualization_timer_callback(const ros::TimerEvent& event);
   
@@ -56,11 +58,13 @@ private:
   // 订阅器
   ros::Subscriber drone_odom_sub_;
   ros::Subscriber target_odom_sub_;
+  ros::Subscriber setpoint_sub_;
   ros::Subscriber state_sub_;
   
   // 发布器
   ros::Publisher drone_path_pub_;
   ros::Publisher target_path_pub_;
+  ros::Publisher setpoint_path_pub_;
   ros::Publisher error_marker_pub_;
   ros::Publisher error_value_pub_;
   ros::Publisher distance_error_pub_;
@@ -100,6 +104,7 @@ private:
     ros::Time timestamp;
     geometry_msgs::Point drone_pos;
     geometry_msgs::Point target_pos;
+    geometry_msgs::Point setpoint_pos;
     geometry_msgs::Vector3 drone_vel;
     geometry_msgs::Vector3 target_vel;
     double distance_error;
@@ -109,12 +114,15 @@ private:
   std::deque<TrackingData> tracking_history_;
   nav_msgs::Path drone_path_;
   nav_msgs::Path target_path_;
+  nav_msgs::Path setpoint_path_;
   
   // 当前状态
   nav_msgs::Odometry current_drone_odom_;
   nav_msgs::Odometry current_target_odom_;
+  mavros_msgs::PositionTarget current_setpoint_;
   bool drone_received_;
   bool target_received_;
+  bool setpoint_received_;
   
   // 统计信息
   double mean_distance_error_;
@@ -131,6 +139,7 @@ private:
   };
   Color drone_color_;
   Color target_color_;
+  Color setpoint_color_;
   Color error_color_;
 };
 

@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   geometry_msgs
   visualization_msgs
+  mavros_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -25,6 +26,7 @@ catkin_package(
     nav_msgs 
     geometry_msgs 
     visualization_msgs
+    mavros_msgs
     tf2
     tf2_ros
     tf2_geometry_msgs

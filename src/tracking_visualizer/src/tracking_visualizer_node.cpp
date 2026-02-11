@@ -7,7 +7,7 @@
 TrackingVisualizerNode::TrackingVisualizerNode(ros::NodeHandle& nh, 
                                                ros::NodeHandle& nh_private)
   : nh_(nh), nh_private_(nh_private),
-    drone_received_(false), target_received_(false),
+    drone_received_(false), target_received_(false), setpoint_received_(false),
     mean_distance_error_(0.0), max_distance_error_(0.0),
     rms_distance_error_(0.0), data_count_(0),
     current_state_(FsmState::INIT), in_traj_state_(false),
@@ -50,15 +50,26 @@ TrackingVisualizerNode::TrackingVisualizerNode(ros::NodeHandle& nh,
   error_color_ = {static_cast<float>(temp_r), static_cast<float>(temp_g), 
                   static_cast<float>(temp_b), static_cast<float>(temp_a)};
   
+  nh_private_.param<double>("setpoint_color/r", temp_r, 0.0);
+  nh_private_.param<double>("setpoint_color/g", temp_g, 1.0);
+  nh_private_.param<double>("setpoint_color/b", temp_b, 0.0);
+  nh_private_.param<double>("setpoint_color/a", temp_a, 1.0);
+  setpoint_color_ = {static_cast<float>(temp_r), static_cast<float>(temp_g), 
+                     static_cast<float>(temp_b), static_cast<float>(temp_a)};
+  
   // 初始化路径
   drone_path_.header.frame_id = "world";
   target_path_.header.frame_id = "world";
+  setpoint_path_.header.frame_id = "world";
   
   // 订阅器
   drone_odom_sub_ = nh_.subscribe<nav_msgs::Odometry>(
     drone_topic_, 10, &TrackingVisualizerNode::drone_odom_callback, this);
   target_odom_sub_ = nh_.subscribe<nav_msgs::Odometry>(
     target_topic_, 10, &TrackingVisualizerNode::target_odom_callback, this);
+  setpoint_sub_ = nh_.subscribe<mavros_msgs::PositionTarget>(
+    "/drone" + std::to_string(drone_id_) + "/mavros/setpoint_raw/local", 10, 
+    &TrackingVisualizerNode::setpoint_callback, this);
   
   // 订阅状态机状态
   std::string state_topic = "/state/state_drone_" + std::to_string(drone_id_);
@@ -70,6 +81,8 @@ TrackingVisualizerNode::TrackingVisualizerNode(ros::NodeHandle& nh,
     "/tracking_viz/drone_path", 10);
   target_path_pub_ = nh_.advertise<nav_msgs::Path>(
     "/tracking_viz/target_path", 10);
+  setpoint_path_pub_ = nh_.advertise<nav_msgs::Path>(
+    "/tracking_viz/setpoint_path", 10);
   error_marker_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(
     "/tracking_viz/error_markers", 10);
   distance_error_pub_ = nh_.advertise<std_msgs::Float64>(
@@ -87,8 +100,9 @@ TrackingVisualizerNode::TrackingVisualizerNode(ros::NodeHandle& nh,
     output_file_ = std::make_unique<std::ofstream>(output_file_path_);
     if (output_file_->is_open()) {
       // 写入CSV表头
-      *output_file_ << "timestamp,drone_x,drone_y,drone_z,drone_yaw,"
+      *output_file_ << "timestamp,drone_x,drone_y,drone_z,drone_roll,drone_pitch,drone_yaw,"
                     << "target_x,target_y,target_z,"
+                    << "setpoint_x,setpoint_y,setpoint_z,"
                     << "drone_vx,drone_vy,drone_vz,"
                     << "target_vx,target_vy,target_vz,"
                     << "distance_error,velocity_error\n";
@@ -146,6 +160,7 @@ void TrackingVisualizerNode::state_callback(const std_msgs::Int32::ConstPtr& msg
       if (only_record_in_traj_) {
         drone_path_.poses.clear();
         target_path_.poses.clear();
+        setpoint_path_.poses.clear();
         tracking_history_.clear();
         mean_distance_error_ = 0.0;
         max_distance_error_ = 0.0;
@@ -206,6 +221,9 @@ void TrackingVisualizerNode::drone_odom_callback(
     data.timestamp = msg->header.stamp;
     data.drone_pos = msg->pose.pose.position;
     data.target_pos = current_target_odom_.pose.pose.position;
+    data.setpoint_pos.x = setpoint_received_ ? current_setpoint_.position.x : 0.0;
+    data.setpoint_pos.y = setpoint_received_ ? current_setpoint_.position.y : 0.0;
+    data.setpoint_pos.z = setpoint_received_ ? current_setpoint_.position.z : 0.0;
     data.drone_vel = msg->twist.twist.linear;
     data.target_vel = current_target_odom_.twist.twist.linear;
     data.distance_error = calculate_distance_error();
@@ -235,9 +253,11 @@ void TrackingVisualizerNode::drone_odom_callback(
       }
       *output_file_ << relative_time << ","
                     << data.drone_pos.x << "," << data.drone_pos.y << "," 
-                    << data.drone_pos.z << "," << yaw << ","
+                    << data.drone_pos.z << "," << roll << "," << pitch << "," << yaw << ","
                     << data.target_pos.x << "," << data.target_pos.y << "," 
                     << data.target_pos.z << ","
+                    << data.setpoint_pos.x << "," << data.setpoint_pos.y << "," 
+                    << data.setpoint_pos.z << ","
                     << data.drone_vel.x << "," << data.drone_vel.y << "," 
                     << data.drone_vel.z << ","
                     << data.target_vel.x << "," << data.target_vel.y << "," 
@@ -272,6 +292,27 @@ void TrackingVisualizerNode::target_odom_callback(
   }
 }
 
+void TrackingVisualizerNode::setpoint_callback(
+    const mavros_msgs::PositionTarget::ConstPtr& msg) {
+  current_setpoint_ = *msg;
+  setpoint_received_ = true;
+  
+  // 只在TRAJ状态或不限制时添加到轨迹
+  if (!only_record_in_traj_ || in_traj_state_) {
+    // 添加到轨迹
+    geometry_msgs::PoseStamped pose;
+    pose.header = msg->header;
+    pose.pose.position = msg->position;
+    pose.pose.orientation.w = 1.0; // 默认朝向
+    setpoint_path_.poses.push_back(pose);
+    
+    // 限制轨迹点数
+    if (setpoint_path_.poses.size() > static_cast<size_t>(max_trajectory_points_)) {
+      setpoint_path_.poses.erase(setpoint_path_.poses.begin());
+    }
+  }
+}
+
 void TrackingVisualizerNode::visualization_timer_callback(
     const ros::TimerEvent& event) {
   if (!drone_received_ || !target_received_) {
@@ -291,6 +332,10 @@ void TrackingVisualizerNode::publish_trajectories() {
   // 发布目标轨迹
   target_path_.header.stamp = ros::Time::now();
   target_path_pub_.publish(target_path_);
+  
+  // 发布规划点轨迹
+  setpoint_path_.header.stamp = ros::Time::now();
+  setpoint_path_pub_.publish(setpoint_path_);
 }
 
 void TrackingVisualizerNode::publish_error_markers() {
