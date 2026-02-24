@@ -48,7 +48,7 @@ TargetPublisherNode::TargetPublisherNode(ros::NodeHandle& nh, ros::NodeHandle& n
   nh_private_.param("ramp_down_time", ramp_down_time_, 3.0);
   nh_private_.param("stationary_time", stationary_time_, 3.0);
   
-  // Velocity-based parameters for D-shape trajectory
+  // Velocity-based parameters for D-shape and Figure-8 trajectories
   nh_private_.param("max_linear_velocity", max_linear_velocity_, 1.5);
   nh_private_.param("linear_acceleration", linear_acceleration_, 0.4);
   
@@ -89,6 +89,40 @@ TargetPublisherNode::TargetPublisherNode(ros::NodeHandle& nh, ros::NodeHandle& n
     ROS_INFO("[D-Shape Segments] lengths=[%.2f, %.2f, %.2f, %.2f]m",
              dshape_segment_lengths_[0], dshape_segment_lengths_[1], 
              dshape_segment_lengths_[2], dshape_segment_lengths_[3]);
+  }
+  
+  // Auto-calculate trajectory parameters for Figure-8
+  if (mode_ == TrajectoryMode::FIGURE_EIGHT) {
+    // Estimate Figure-8 path length (approximate)
+    // For a lemniscate: approximate arc length ≈ 5.244 * a (where a is the scale parameter)
+    double path_length = 5.244 * trajectory_size_;
+    
+    // Calculate ramp times from acceleration
+    ramp_up_time_ = max_linear_velocity_ / linear_acceleration_;
+    ramp_down_time_ = max_linear_velocity_ / linear_acceleration_;
+    
+    // Calculate distances during acceleration phases
+    double accel_distance = 0.5 * linear_acceleration_ * ramp_up_time_ * ramp_up_time_;
+    double decel_distance = 0.5 * linear_acceleration_ * ramp_down_time_ * ramp_down_time_;
+    
+    // Remaining distance at constant velocity
+    double const_distance = path_length - accel_distance - decel_distance;
+    
+    if (const_distance < 0) {
+      // If trajectory too short to reach max velocity, adjust
+      ROS_WARN("Trajectory too short to reach max velocity, adjusting parameters");
+      double t_total = 2.0 * std::sqrt(path_length / linear_acceleration_);
+      ramp_up_time_ = t_total / 2.0;
+      ramp_down_time_ = t_total / 2.0;
+      trajectory_duration_ = t_total;
+    } else {
+      // Calculate constant velocity time
+      double const_time = const_distance / max_linear_velocity_;
+      trajectory_duration_ = ramp_up_time_ + const_time + ramp_down_time_;
+    }
+    
+    ROS_INFO("[Figure-8 Velocity-Based] path_length=%.2fm, duration=%.2fs, ramp_time=%.2fs, max_vel=%.2fm/s",
+             path_length, trajectory_duration_, ramp_up_time_, max_linear_velocity_);
   }
   
   nh_.param("use_sim_time", use_sim_time_, false);
@@ -466,8 +500,26 @@ void TargetPublisherNode::generate_figure_eight_trajectory(double t) {
   double vx_local = a * std::cos(2.0 * theta) * theta_dot;
   double vy_local = a * std::cos(theta) * theta_dot;
   
-  vx = vx_local;
-  vy = vy_local;
+  // 归一化速度，确保不超过max_linear_velocity（与D-shape一致）
+  double tangent_magnitude = std::sqrt(vx_local * vx_local + vy_local * vy_local);
+  if (tangent_magnitude > 1e-6) {
+    // 计算当前应有的物理速度（基于加速度曲线）
+    double current_velocity = 0.0;
+    if (t <= ramp_up_time_) {
+      current_velocity = linear_acceleration_ * t;
+    } else if (t <= ramp_up_time_ + total_constant_duration_) {
+      current_velocity = max_linear_velocity_;
+    } else if (t <= ramp_up_time_ + total_constant_duration_ + ramp_down_time_) {
+      double t_in_decel = t - ramp_up_time_ - total_constant_duration_;
+      current_velocity = max_linear_velocity_ - linear_acceleration_ * t_in_decel;
+    }
+    // 归一化切向量，乘以实际物理速度
+    vx = (vx_local / tangent_magnitude) * current_velocity;
+    vy = (vy_local / tangent_magnitude) * current_velocity;
+  } else {
+    vx = 0.0;
+    vy = 0.0;
+  }
   vz = 0.0;
   
   double v_linear = std::sqrt(vx*vx + vy*vy);

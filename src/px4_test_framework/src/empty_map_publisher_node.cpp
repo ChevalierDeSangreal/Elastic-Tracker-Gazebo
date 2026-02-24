@@ -22,8 +22,8 @@ int main(int argc, char** argv) {
   quadrotor_msgs::OccMap3d map_msg;
   map_msg.header.frame_id = "world";
   map_msg.resolution = 0.1;  // 10cm resolution
-  map_msg.size_x = 100;       // 10m x 10m x 10m map
-  map_msg.size_y = 100;
+  map_msg.size_x = 200;       // 20m x 20m x 10m map (增大以支持Figure-8轨迹)
+  map_msg.size_y = 200;
   map_msg.size_z = 100;
   map_msg.offset_x = -50;     // Center at origin
   map_msg.offset_y = -50;

@@ -4,7 +4,8 @@ import numpy as np
 import os
 
 # 读取数据
-data = pd.read_csv('/tmp/elastic_tracker_tracking_data.csv')
+# data = pd.read_csv('/tmp/elastic_tracker_tracking_data.csv')
+data = pd.read_csv('/home/core/wangzimo/Elastic-Tracker/test_log/typeD.csv')
 
 # 打印数据基本信息
 print(f"数据总行数: {len(data)}")
@@ -88,6 +89,54 @@ cos_angle = np.clip(direction_body_x_normalized, -1.0, 1.0)
 angle_rad_sorted = np.arccos(cos_angle)
 angle_deg_sorted = np.degrees(angle_rad_sorted)
 
+# 检测目标物体开始移动和停止移动的时刻
+# 使用速度阈值来判断是否在移动（阈值设为0.05 m/s）
+velocity_threshold = 0.05
+is_moving = target_velocity_magnitude_sorted > velocity_threshold
+
+# 找到开始移动的时刻（从静止到移动的转变）
+start_moving_indices = []
+for i in range(1, len(is_moving)):
+    if not is_moving[i-1] and is_moving[i]:
+        start_moving_indices.append(i)
+
+# 找到停止移动的时刻（从移动到静止的转变）
+stop_moving_indices = []
+for i in range(1, len(is_moving)):
+    if is_moving[i-1] and not is_moving[i]:
+        stop_moving_indices.append(i)
+
+# 提取对应的时间和位置
+start_moving_times = [time_sorted.iloc[i] for i in start_moving_indices]
+stop_moving_times = [time_sorted.iloc[i] for i in stop_moving_indices]
+start_moving_positions = [(data_sorted['target_x'].iloc[i], data_sorted['target_y'].iloc[i]) for i in start_moving_indices]
+stop_moving_positions = [(data_sorted['target_x'].iloc[i], data_sorted['target_y'].iloc[i]) for i in stop_moving_indices]
+
+print(f"\n【目标运动时刻】")
+print(f"  开始移动时刻: {start_moving_times} 秒")
+print(f"  停止移动时刻: {stop_moving_times} 秒")
+
+# 截断数据：只保留目标物体停止移动之前的数据
+if stop_moving_indices:
+    # 使用第一个停止移动的索引作为截断点
+    cutoff_index = stop_moving_indices[0]
+    print(f"\n⚠️  数据截断：仅可视化目标停止前的数据（索引 0-{cutoff_index}）")
+    
+    # 截断所有数据
+    data_sorted = data_sorted.iloc[:cutoff_index].reset_index(drop=True)
+    time_sorted = time_sorted.iloc[:cutoff_index].reset_index(drop=True)
+    distance_sorted = distance_sorted.iloc[:cutoff_index].reset_index(drop=True)
+    velocity_diff_sorted = velocity_diff_sorted.iloc[:cutoff_index].reset_index(drop=True)
+    angle_deg_sorted = angle_deg_sorted.iloc[:cutoff_index].reset_index(drop=True)
+    
+    # 更新停止移动时刻和位置（截断后不再显示）
+    stop_moving_times = []
+    stop_moving_indices = []
+    stop_moving_positions = []
+    
+    print(f"   截断后数据行数: {len(data_sorted)}")
+    print(f"   截断后时间范围: {time_sorted.min():.2f} - {time_sorted.max():.2f} 秒")
+
 # 绘制四个子图 (2x2布局)
 fig = plt.figure(figsize=(16, 12))
 gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
@@ -98,6 +147,16 @@ axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]),
 axes[0].plot(time_sorted, distance_sorted, linewidth=2, color='blue', label='Distance')
 axes[0].axhline(y=distance_sorted.mean(), color='r', linestyle='--', 
                 label=f'Mean: {distance_sorted.mean():.4f} m')
+# 标记目标开始移动和停止移动的时刻
+for t in start_moving_times:
+    axes[0].axvline(x=t, color='green', linestyle=':', linewidth=2, alpha=0.7)
+for t in stop_moving_times:
+    axes[0].axvline(x=t, color='red', linestyle=':', linewidth=2, alpha=0.7)
+# 添加图例说明
+if start_moving_times:
+    axes[0].axvline(x=-999, color='green', linestyle=':', linewidth=2, label='Target Start Moving')
+if stop_moving_times:
+    axes[0].axvline(x=-999, color='red', linestyle=':', linewidth=2, label='Target Stop Moving')
 axes[0].set_xlabel('Time (s)')
 axes[0].set_ylabel('Distance (m)')
 axes[0].set_title('Distance to Target vs Time')
@@ -109,6 +168,16 @@ if time_sorted.max() > time_sorted.min():
 # 子图2: 与目标物体速度值差异随时间变化
 axes[1].plot(time_sorted, velocity_diff_sorted, linewidth=2, color='orange', label='Velocity Difference')
 axes[1].axhline(y=0, color='k', linestyle='-', linewidth=0.5, alpha=0.3)
+# 标记目标开始移动和停止移动的时刻
+for t in start_moving_times:
+    axes[1].axvline(x=t, color='green', linestyle=':', linewidth=2, alpha=0.7)
+for t in stop_moving_times:
+    axes[1].axvline(x=t, color='red', linestyle=':', linewidth=2, alpha=0.7)
+# 添加图例说明
+if start_moving_times:
+    axes[1].axvline(x=-999, color='green', linestyle=':', linewidth=2, label='Target Start Moving')
+if stop_moving_times:
+    axes[1].axvline(x=-999, color='red', linestyle=':', linewidth=2, label='Target Stop Moving')
 axes[1].set_xlabel('Time (s)')
 axes[1].set_ylabel('Velocity Difference (m/s)')
 axes[1].set_title('Velocity Magnitude Difference vs Time')
@@ -121,6 +190,16 @@ if time_sorted.max() > time_sorted.min():
 axes[2].plot(time_sorted, angle_deg_sorted, linewidth=2, color='green', label='Angle')
 axes[2].axhline(y=angle_deg_sorted.mean(), color='r', linestyle='--', 
                 label=f'Mean: {angle_deg_sorted.mean():.4f} deg')
+# 标记目标开始移动和停止移动的时刻
+for t in start_moving_times:
+    axes[2].axvline(x=t, color='green', linestyle=':', linewidth=2, alpha=0.7)
+for t in stop_moving_times:
+    axes[2].axvline(x=t, color='red', linestyle=':', linewidth=2, alpha=0.7)
+# 添加图例说明
+if start_moving_times:
+    axes[2].axvline(x=-999, color='green', linestyle=':', linewidth=2, label='Target Start Moving')
+if stop_moving_times:
+    axes[2].axvline(x=-999, color='red', linestyle=':', linewidth=2, label='Target Stop Moving')
 axes[2].set_xlabel('Time (s)')
 axes[2].set_ylabel('Angle (deg)')
 axes[2].set_title('Angle: Body X-axis to Target Direction vs Time')
@@ -150,6 +229,14 @@ axes[3].scatter(data_sorted['target_x'].iloc[-1], data_sorted['target_y'].iloc[-
 axes[3].scatter(data_sorted['drone_x'].iloc[-1], data_sorted['drone_y'].iloc[-1], 
                 s=100, c='blue', marker='s', edgecolors='black', linewidths=2, 
                 label='Drone End', zorder=5)
+
+# 标记目标开始移动和停止移动的位置
+for i, (x, y) in enumerate(start_moving_positions):
+    axes[3].scatter(x, y, s=150, c='green', marker='^', edgecolors='black', 
+                   linewidths=2, label='Target Start Moving' if i == 0 else '', zorder=6)
+for i, (x, y) in enumerate(stop_moving_positions):
+    axes[3].scatter(x, y, s=150, c='orange', marker='v', edgecolors='black', 
+                   linewidths=2, label='Target Stop Moving' if i == 0 else '', zorder=6)
 
 axes[3].set_xlabel('X Position (m)')
 axes[3].set_ylabel('Y Position (m)')
